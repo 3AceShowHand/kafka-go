@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -27,29 +28,29 @@ import (
 // by the function and test if it an instance of kafka.WriteErrors in order to
 // identify which messages have succeeded or failed, for example:
 //
-//	// Construct a synchronous writer (the default mode).
-//	w := &kafka.Writer{
-//		Addr:         Addr: kafka.TCP("localhost:9092", "localhost:9093", "localhost:9094"),
-//		Topic:        "topic-A",
-//		RequiredAcks: kafka.RequireAll,
-//	}
-//
-//	...
-//
-//  // Passing a context can prevent the operation from blocking indefinitely.
-//	switch err := w.WriteMessages(ctx, msgs...).(type) {
-//	case nil:
-//	case kafka.WriteErrors:
-//		for i := range msgs {
-//			if err[i] != nil {
-//				// handle the error writing msgs[i]
-//				...
-//			}
+//		// Construct a synchronous writer (the default mode).
+//		w := &kafka.Writer{
+//			Addr:         Addr: kafka.TCP("localhost:9092", "localhost:9093", "localhost:9094"),
+//			Topic:        "topic-A",
+//			RequiredAcks: kafka.RequireAll,
 //		}
-//	default:
-//		// handle other errors
+//
 //		...
-//	}
+//
+//	 // Passing a context can prevent the operation from blocking indefinitely.
+//		switch err := w.WriteMessages(ctx, msgs...).(type) {
+//		case nil:
+//		case kafka.WriteErrors:
+//			for i := range msgs {
+//				if err[i] != nil {
+//					// handle the error writing msgs[i]
+//					...
+//				}
+//			}
+//		default:
+//			// handle other errors
+//			...
+//		}
 //
 // In asynchronous mode, the program may configure a completion handler on the
 // writer to receive notifications of messages being written to kafka:
@@ -615,9 +616,7 @@ func (w *Writer) WriteMessages(ctx context.Context, msgs ...Message) error {
 		return nil
 	}
 
-	balancer := w.balancer()
 	batchBytes := w.batchBytes()
-
 	for i := range msgs {
 		n := int64(msgs[i].size())
 		if n > batchBytes {
@@ -636,7 +635,8 @@ func (w *Writer) WriteMessages(ctx context.Context, msgs ...Message) error {
 	// Message value which is 100+ bytes and contains pointers and contributes
 	// to increasing GC work.
 	assignments := make(map[topicPartition][]int32)
-
+	balancer := w.balancer()
+	var partition int32
 	for i, msg := range msgs {
 		topic, err := w.chooseTopic(msg)
 		if err != nil {
@@ -648,11 +648,18 @@ func (w *Writer) WriteMessages(ctx context.Context, msgs ...Message) error {
 			return err
 		}
 
-		partition := balancer.Balance(msg, loadCachedPartitions(numPartitions)...)
+		if msg.Partition != 0 {
+			if msg.Partition < 0 || msg.Partition >= numPartitions {
+				return fmt.Errorf("partition out of the range, partition: %d, partition-num: %d", msg.Partition, numPartitions)
+			}
+			partition = int32(msg.Partition)
+		} else {
+			partition = int32(balancer.Balance(msg, loadCachedPartitions(numPartitions)...))
+		}
 
 		key := topicPartition{
 			topic:     topic,
-			partition: int32(partition),
+			partition: partition,
 		}
 
 		assignments[key] = append(assignments[key], int32(i))
