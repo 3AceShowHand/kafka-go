@@ -1214,7 +1214,7 @@ func (g *connGroup) connect(ctx context.Context, addr net.Addr) (*conn, error) {
 		}
 	}
 
-	reqs := make(chan connRequest)
+	reqs := make(chan connRequest, 128)
 	c := &conn{
 		network: netAddr.Network(),
 		address: netAddr.String(),
