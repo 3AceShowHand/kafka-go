@@ -27,29 +27,29 @@ import (
 // by the function and test if it an instance of kafka.WriteErrors in order to
 // identify which messages have succeeded or failed, for example:
 //
-//	// Construct a synchronous writer (the default mode).
-//	w := &kafka.Writer{
-//		Addr:         Addr: kafka.TCP("localhost:9092", "localhost:9093", "localhost:9094"),
-//		Topic:        "topic-A",
-//		RequiredAcks: kafka.RequireAll,
-//	}
-//
-//	...
-//
-//  // Passing a context can prevent the operation from blocking indefinitely.
-//	switch err := w.WriteMessages(ctx, msgs...).(type) {
-//	case nil:
-//	case kafka.WriteErrors:
-//		for i := range msgs {
-//			if err[i] != nil {
-//				// handle the error writing msgs[i]
-//				...
-//			}
+//		// Construct a synchronous writer (the default mode).
+//		w := &kafka.Writer{
+//			Addr:         Addr: kafka.TCP("localhost:9092", "localhost:9093", "localhost:9094"),
+//			Topic:        "topic-A",
+//			RequiredAcks: kafka.RequireAll,
 //		}
-//	default:
-//		// handle other errors
+//
 //		...
-//	}
+//
+//	 // Passing a context can prevent the operation from blocking indefinitely.
+//		switch err := w.WriteMessages(ctx, msgs...).(type) {
+//		case nil:
+//		case kafka.WriteErrors:
+//			for i := range msgs {
+//				if err[i] != nil {
+//					// handle the error writing msgs[i]
+//					...
+//				}
+//			}
+//		default:
+//			// handle other errors
+//			...
+//		}
 //
 // In asynchronous mode, the program may configure a completion handler on the
 // writer to receive notifications of messages being written to kafka:
@@ -82,6 +82,8 @@ type Writer struct {
 	// This field is required, attempting to write messages to a writer with a
 	// nil address will error.
 	Addr net.Addr
+
+	Client *Client
 
 	// Topic is the name of the topic that the writer will produce messages to.
 	//
@@ -605,7 +607,6 @@ func (w *Writer) WriteMessages(ctx context.Context, msgs ...Message) error {
 	if w.Addr == nil {
 		return errors.New("kafka.(*Writer).WriteMessages: cannot create a kafka writer with a nil address")
 	}
-
 	if !w.enter() {
 		return io.ErrClosedPipe
 	}
@@ -720,12 +721,10 @@ func (w *Writer) batchMessages(messages []Message, assignments map[topicPartitio
 }
 
 func (w *Writer) produce(key topicPartition, batch *writeBatch) (*ProduceResponse, error) {
-	timeout := w.writeTimeout()
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), w.writeTimeout())
 	defer cancel()
 
-	return w.client(timeout).Produce(ctx, &ProduceRequest{
+	return w.Client.Produce(ctx, &ProduceRequest{
 		Partition:    int(key.partition),
 		Topic:        key.topic,
 		RequiredAcks: w.RequiredAcks,
@@ -737,14 +736,16 @@ func (w *Writer) produce(key topicPartition, batch *writeBatch) (*ProduceRespons
 }
 
 func (w *Writer) partitions(ctx context.Context, topic string) (int, error) {
-	client := w.client(w.readTimeout())
+	if w.Client == nil {
+		w.Client = w.client(w.readTimeout())
+	}
 	// Here we use the transport directly as an optimization to avoid the
 	// construction of temporary request and response objects made by the
 	// (*Client).Metadata API.
 	//
 	// It is expected that the transport will optimize this request by
 	// caching recent results (the kafka.Transport types does).
-	r, err := client.transport().RoundTrip(ctx, client.Addr, &metadataAPI.Request{
+	r, err := w.Client.transport().RoundTrip(ctx, w.Addr, &metadataAPI.Request{
 		TopicNames:             []string{topic},
 		AllowAutoTopicCreation: w.AllowAutoTopicCreation,
 	})
