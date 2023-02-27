@@ -1034,17 +1034,17 @@ func (ptw *partitionWriter) writeMessages(msgs []Message, indexes []int32) map[*
 	assignMessage:
 		batch := ptw.currBatch
 		if batch == nil {
-			batch = ptw.newWriteBatch()
+			batch = ptw.newWriteBatch(batchSize, batchBytes)
 			ptw.currBatch = batch
 		}
-		if !batch.add(msgs[i], batchSize, batchBytes) {
+		if !batch.add(msgs[i]) {
 			batch.trigger()
 			ptw.queue.Put(batch)
 			ptw.currBatch = nil
 			goto assignMessage
 		}
 
-		if batch.full(batchSize, batchBytes) {
+		if batch.full() {
 			batch.trigger()
 			ptw.queue.Put(batch)
 			ptw.currBatch = nil
@@ -1058,8 +1058,8 @@ func (ptw *partitionWriter) writeMessages(msgs []Message, indexes []int32) map[*
 }
 
 // ptw.w can be accessed here because this is called with the lock ptw.mutex already held.
-func (ptw *partitionWriter) newWriteBatch() *writeBatch {
-	batch := newWriteBatch(time.Now(), ptw.w.batchTimeout())
+func (ptw *partitionWriter) newWriteBatch(maxSize int, maxBytes int64) *writeBatch {
+	batch := newWriteBatch(maxSize, maxBytes, ptw.w.batchTimeout())
 	ptw.w.spawn(func() { ptw.awaitBatch(batch) })
 	return batch
 }
@@ -1192,34 +1192,35 @@ func (ptw *partitionWriter) close() {
 }
 
 type writeBatch struct {
-	time  time.Time
-	msgs  []Message
-	size  int
-	bytes int64
-	ready chan struct{}
-	done  chan struct{}
-	timer *time.Timer
-	err   error // result of the batch completion
+	time     time.Time
+	msgs     []Message
+	size     int
+	maxSize  int
+	bytes    int64
+	maxBytes int64
+	ready    chan struct{}
+	done     chan struct{}
+	timer    *time.Timer
+	err      error // result of the batch completion
 }
 
-func newWriteBatch(now time.Time, timeout time.Duration) *writeBatch {
+func newWriteBatch(maxSize int, maxBytes int64, timeout time.Duration) *writeBatch {
 	return &writeBatch{
-		time:  now,
-		ready: make(chan struct{}),
-		done:  make(chan struct{}),
-		timer: time.NewTimer(timeout),
+		time:     time.Now(),
+		maxSize:  maxSize,
+		maxBytes: maxBytes,
+		msgs:     make([]Message, 0, maxSize),
+		ready:    make(chan struct{}),
+		done:     make(chan struct{}),
+		timer:    time.NewTimer(timeout),
 	}
 }
 
-func (b *writeBatch) add(msg Message, maxSize int, maxBytes int64) bool {
+func (b *writeBatch) add(msg Message) bool {
 	bytes := int64(msg.size())
 
-	if b.size > 0 && (b.bytes+bytes) > maxBytes {
+	if b.size > 0 && (b.bytes+bytes) > b.maxBytes {
 		return false
-	}
-
-	if cap(b.msgs) == 0 {
-		b.msgs = make([]Message, 0, maxSize)
 	}
 
 	b.msgs = append(b.msgs, msg)
@@ -1228,8 +1229,8 @@ func (b *writeBatch) add(msg Message, maxSize int, maxBytes int64) bool {
 	return true
 }
 
-func (b *writeBatch) full(maxSize int, maxBytes int64) bool {
-	return b.size >= maxSize || b.bytes >= maxBytes
+func (b *writeBatch) full() bool {
+	return b.size >= b.maxSize || b.bytes >= b.maxBytes
 }
 
 func (b *writeBatch) trigger() {
