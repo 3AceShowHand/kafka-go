@@ -390,7 +390,11 @@ func (p *connPool) roundTrip(ctx context.Context, req Request) (Response, error)
 		response = p.sendRequest(ctx, req, state)
 	}
 
-	r, err := response.await(ctx)
+	return p.handleResponse(ctx, req, response)
+}
+
+func (p *connPool) handleResponse(ctx context.Context, req Request, responsePromise promise) (Response, error) {
+	r, err := responsePromise.await(ctx)
 	if err != nil {
 		return r, err
 	}
@@ -1214,7 +1218,7 @@ func (g *connGroup) connect(ctx context.Context, addr net.Addr) (*conn, error) {
 		}
 	}
 
-	reqs := make(chan connRequest)
+	reqs := make(chan connRequest, 5)
 	c := &conn{
 		network: netAddr.Network(),
 		address: netAddr.String(),
