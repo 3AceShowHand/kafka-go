@@ -998,6 +998,8 @@ type partitionWriter struct {
 	mutex     sync.Mutex
 	currBatch *writeBatch
 
+	response chan *responsePromise
+
 	// reference to the writer that owns this batch. Used for the produce logic
 	// as well as stat tracking
 	w *Writer
@@ -1009,8 +1011,40 @@ func newPartitionWriter(w *Writer, key topicPartition) *partitionWriter {
 		queue: newBatchQueue(10),
 		w:     w,
 	}
-	w.spawn(writer.writeBatches)
+
+	maxInflightRequests := w.maxInflightRequests()
+	if maxInflightRequests > 0 {
+		writer.response = make(chan *responsePromise, maxInflightRequests-1)
+		w.spawn(writer.asyncWriteBatches)
+		w.spawn(writer.handleResponses)
+	} else {
+		w.spawn(writer.writeBatches)
+	}
+
 	return writer
+}
+
+type responsePromise struct {
+}
+
+func (ptw *partitionWriter) handleResponses() {
+	for response := range ptw.response {
+		ptw.handleResponse(response)
+	}
+}
+
+func (ptw *partitionWriter) asyncWriteBatches() {
+	for {
+		batch := ptw.queue.Get()
+		if batch == nil {
+			return
+		}
+		ptw.asyncWriteBatch(batch)
+	}
+}
+
+func (ptw *partitionWriter) asyncWriteBatch(batch *writeBatch) {
+
 }
 
 func (ptw *partitionWriter) writeBatches() {
