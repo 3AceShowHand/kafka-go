@@ -1156,6 +1156,7 @@ func (ptw *partitionWriter) writeBatch(batch *writeBatch) {
 		log.Info("send message failed",
 			zap.String("topic", key.topic),
 			zap.Int32("partition", key.partition),
+			zap.Int("message-count", batch.size),
 			zap.Error(err))
 
 		if !isTemporary(err) && !isTransientNetworkError(err) {
